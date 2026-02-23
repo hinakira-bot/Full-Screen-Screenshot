@@ -40,26 +40,48 @@
       format: "a4",
     });
 
-    const imgDataUrl = canvas.toDataURL("image/png");
-
+    // ページごとにCanvasを分割してPDFに追加
     for (let page = 0; page < totalPages; page++) {
       if (page > 0) {
         pdf.addPage();
       }
 
-      const yOffset = -(page * pageContentHeight) + margin;
+      // このページに対応するソース画像の領域（px単位）
+      const srcYStart = (page * pageContentHeight / scaledHeight) * canvas.height;
+      const srcYEnd = Math.min(
+        ((page + 1) * pageContentHeight / scaledHeight) * canvas.height,
+        canvas.height
+      );
+      const srcH = srcYEnd - srcYStart;
 
-      pdf.saveGraphicsState();
-      pdf.rect(margin, margin, contentWidth, pageContentHeight, "clip");
+      // ページ用のCanvasを作成
+      const pageCanvas = document.createElement("canvas");
+      pageCanvas.width = canvas.width;
+      pageCanvas.height = Math.ceil(srcH);
+      const pageCtx = pageCanvas.getContext("2d");
+
+      // 元のCanvasから該当部分を切り出し
+      pageCtx.drawImage(
+        canvas,
+        0, Math.floor(srcYStart),     // ソースの位置
+        canvas.width, Math.ceil(srcH), // ソースのサイズ
+        0, 0,                          // 出力先の位置
+        canvas.width, Math.ceil(srcH)  // 出力先のサイズ
+      );
+
+      const pageImgData = pageCanvas.toDataURL("image/png");
+
+      // このページの画像の高さ（mm単位）
+      const pageImgHeight = (srcH / canvas.height) * scaledHeight;
+
       pdf.addImage(
-        imgDataUrl,
+        pageImgData,
         "PNG",
         margin,
-        yOffset,
+        margin,
         contentWidth,
-        scaledHeight
+        pageImgHeight
       );
-      pdf.restoreGraphicsState();
     }
 
     return pdf.output("datauristring");
