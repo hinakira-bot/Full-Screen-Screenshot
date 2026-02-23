@@ -61,22 +61,35 @@ function notifyProgress(text, percent) {
 }
 
 /**
- * 現在表示されている画面をキャプチャ
+ * 現在表示されている画面をキャプチャ（リトライ付き）
+ * Chrome の captureVisibleTab は 1秒あたり2回までの制限がある
  */
-async function captureScreen(tabId) {
-  return new Promise((resolve, reject) => {
-    chrome.tabs.captureVisibleTab(
-      null,
-      { format: "png", quality: 100 },
-      (dataUrl) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-        } else {
-          resolve(dataUrl);
-        }
+async function captureScreen(tabId, retries = 3) {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        chrome.tabs.captureVisibleTab(
+          null,
+          { format: "png", quality: 100 },
+          (result) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else {
+              resolve(result);
+            }
+          }
+        );
+      });
+      return dataUrl;
+    } catch (err) {
+      if (attempt < retries - 1 && err.message.includes("MAX_CAPTURE")) {
+        // レート制限に引っかかった場合、待ってからリトライ
+        await new Promise((r) => setTimeout(r, 1000));
+      } else {
+        throw err;
       }
-    );
-  });
+    }
+  }
 }
 
 /**
@@ -134,8 +147,8 @@ async function captureArticle(tabId, format) {
     // スクロール
     await sendToTab(tabId, { type: "scroll-to", y: currentY });
 
-    // 少し待つ（画像の読み込み等）
-    await new Promise((r) => setTimeout(r, 250));
+    // captureVisibleTab のレート制限（1秒2回）を回避するため十分に待つ
+    await new Promise((r) => setTimeout(r, 600));
 
     // キャプチャ
     const dataUrl = await captureScreen(tabId);
