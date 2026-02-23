@@ -12,7 +12,8 @@
    * Canvas から PDF の dataURL を生成
    */
   function canvasToPdfDataUrl(canvas) {
-    const { jspdf } = window.jspdf;
+    // UMDビルド: window.jspdf.jsPDF がコンストラクタ
+    const jsPDF = window.jspdf.jsPDF;
 
     const dpr = window.devicePixelRatio || 1;
     const displayWidth = canvas.width / dpr;
@@ -33,7 +34,7 @@
     // 必要なページ数
     const totalPages = Math.ceil(scaledHeight / pageContentHeight);
 
-    const pdf = new jspdf({
+    const pdf = new jsPDF({
       orientation: "portrait",
       unit: "mm",
       format: "a4",
