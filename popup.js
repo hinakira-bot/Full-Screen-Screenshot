@@ -56,13 +56,7 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
 
-      // Inject content script
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: ["lib/article-detector.js", "content.js"],
-      });
-
-      // Send capture command to background
+      // Send capture command to background (スクリプト注入もbackgroundで実行)
       const response = await chrome.runtime.sendMessage({
         type: "start-capture",
         tabId: tab.id,

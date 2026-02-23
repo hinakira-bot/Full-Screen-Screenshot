@@ -1,10 +1,8 @@
 /**
- * Content Script - 記事検出とキャプチャ制御
+ * Content Script - 記事検出とキャプチャ
  *
- * background.js からの指示を受けて:
- *   1. ArticleDetector で記事要素を特定
- *   2. 記事要素の位置・サイズ情報を返す
- *   3. スクロールキャプチャ時のスクロール制御を行う
+ * html2canvas を使って記事要素を直接キャンバスにレンダリング。
+ * captureVisibleTab のレート制限を完全に回避。
  */
 (() => {
   "use strict";
@@ -14,9 +12,9 @@
   window.__articleCaptureInjected = true;
 
   /**
-   * 記事要素を検出し、その情報を返す
+   * 記事要素を検出し、html2canvas でキャプチャして dataURL を返す
    */
-  function detectAndMeasure() {
+  async function captureArticle(format) {
     const detector = window.__ArticleDetector;
     if (!detector) {
       return { error: "ArticleDetector が読み込まれていません" };
@@ -27,164 +25,66 @@
       return { error: "記事要素が見つかりませんでした" };
     }
 
-    // ノイズ要素を一時的に非表示にする
+    // ノイズ要素を一時的に非表示
     const noisyElements = detector.findNoisyChildren(article);
-    const hiddenElements = [];
-
+    const hiddenBackup = [];
     for (const el of noisyElements) {
-      const original = el.style.display;
-      hiddenElements.push({ el, original });
+      hiddenBackup.push({ el, display: el.style.display });
       el.style.display = "none";
     }
 
-    // 記事要素の位置・サイズを取得
-    const rect = article.getBoundingClientRect();
-    const scrollTop = window.scrollY || document.documentElement.scrollTop;
-    const scrollLeft = window.scrollX || document.documentElement.scrollLeft;
+    try {
+      // html2canvas で記事要素をキャプチャ
+      const canvas = await html2canvas(article, {
+        useCORS: true,
+        allowTaint: true,
+        scale: window.devicePixelRatio || 1,
+        logging: false,
+        backgroundColor: "#ffffff",
+        // スクロール位置を自動で処理してくれる
+        scrollX: 0,
+        scrollY: -window.scrollY,
+        windowWidth: document.documentElement.scrollWidth,
+        windowHeight: document.documentElement.scrollHeight,
+      });
 
-    // padding を少し追加
-    const padding = 16;
+      const imageDataUrl = canvas.toDataURL("image/png");
 
-    const info = {
-      // ページ上の絶対座標
-      top: Math.max(0, rect.top + scrollTop - padding),
-      left: Math.max(0, rect.left + scrollLeft - padding),
-      width: Math.ceil(rect.width + padding * 2),
-      height: Math.ceil(rect.height + padding * 2),
-      // ビューポート情報
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight,
-      // ページ全体
-      pageHeight:
-        Math.max(
-          document.body.scrollHeight,
-          document.documentElement.scrollHeight
-        ),
-      devicePixelRatio: window.devicePixelRatio || 1,
-      // 非表示にした要素の数
-      hiddenCount: hiddenElements.length,
-    };
-
-    // 非表示を元に戻す（background.jsが段階的にスクロールキャプチャするまで維持）
-    // → 実際にはキャプチャ中に再度非表示にする
-    for (const { el, original } of hiddenElements) {
-      el.style.display = original;
-    }
-
-    return info;
-  }
-
-  /**
-   * キャプチャ前にノイズ要素を非表示にする
-   */
-  function hideNoise() {
-    const detector = window.__ArticleDetector;
-    if (!detector) return [];
-
-    const article = detector.detectArticle();
-    if (!article) return [];
-
-    const noisyElements = detector.findNoisyChildren(article);
-    const backup = [];
-
-    for (const el of noisyElements) {
-      backup.push({ selector: getUniqueSelector(el), display: el.style.display });
-      el.style.display = "none";
-    }
-
-    return backup;
-  }
-
-  /**
-   * ノイズ要素の表示を復元する
-   */
-  function restoreNoise(backup) {
-    for (const item of backup) {
-      try {
-        const el = document.querySelector(item.selector);
-        if (el) {
-          el.style.display = item.display;
-        }
-      } catch (e) {
-        // セレクタが無効な場合は無視
+      if (format === "pdf") {
+        // PDF生成はoffscreenに委任するため、画像データを返す
+        return {
+          success: true,
+          dataUrl: imageDataUrl,
+          width: canvas.width,
+          height: canvas.height,
+          needsPdf: true,
+        };
+      } else {
+        return {
+          success: true,
+          dataUrl: imageDataUrl,
+          width: canvas.width,
+          height: canvas.height,
+          needsPdf: false,
+        };
+      }
+    } catch (err) {
+      return { error: "キャプチャに失敗: " + err.message };
+    } finally {
+      // ノイズ要素を復元
+      for (const { el, display } of hiddenBackup) {
+        el.style.display = display;
       }
     }
-  }
-
-  /**
-   * 指定位置までスクロール
-   */
-  function scrollToPosition(y) {
-    window.scrollTo({ top: y, left: 0, behavior: "instant" });
-    // スクロール完了を待つ
-    return new Promise((resolve) => setTimeout(resolve, 100));
-  }
-
-  /**
-   * 要素のユニークなCSSセレクタを生成
-   */
-  function getUniqueSelector(el) {
-    if (el.id) return "#" + CSS.escape(el.id);
-
-    const parts = [];
-    let current = el;
-    while (current && current !== document.body && current !== document.documentElement) {
-      let selector = current.tagName.toLowerCase();
-      if (current.id) {
-        selector = "#" + CSS.escape(current.id);
-        parts.unshift(selector);
-        break;
-      }
-      const parent = current.parentElement;
-      if (parent) {
-        const siblings = Array.from(parent.children).filter(
-          (c) => c.tagName === current.tagName
-        );
-        if (siblings.length > 1) {
-          const index = siblings.indexOf(current) + 1;
-          selector += `:nth-of-type(${index})`;
-        }
-      }
-      parts.unshift(selector);
-      current = current.parentElement;
-    }
-    return parts.join(" > ");
   }
 
   // background.js からのメッセージを処理
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === "detect-article") {
-      const info = detectAndMeasure();
-      sendResponse(info);
-      return true;
-    }
-
-    if (message.type === "hide-noise") {
-      const backup = hideNoise();
-      sendResponse({ backup });
-      return true;
-    }
-
-    if (message.type === "restore-noise") {
-      restoreNoise(message.backup || []);
-      sendResponse({ done: true });
-      return true;
-    }
-
-    if (message.type === "scroll-to") {
-      scrollToPosition(message.y).then(() => {
-        sendResponse({ done: true, scrollY: window.scrollY });
-      });
+    if (message.type === "capture-article") {
+      captureArticle(message.format)
+        .then((result) => sendResponse(result))
+        .catch((err) => sendResponse({ error: err.message }));
       return true; // async response
-    }
-
-    if (message.type === "get-scroll-info") {
-      sendResponse({
-        scrollY: window.scrollY,
-        viewportHeight: window.innerHeight,
-        viewportWidth: window.innerWidth,
-      });
-      return true;
     }
   });
 })();
