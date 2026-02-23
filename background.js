@@ -74,11 +74,18 @@ async function captureArticle(tabId, format) {
 
   notifyProgress("キャプチャ中...", 40);
 
+  // スクリプト注入後、少し待ってからメッセージを送信
+  await new Promise((r) => setTimeout(r, 300));
+
   // 2. content.js に記事キャプチャを依頼（html2canvasで直接レンダリング）
   const result = await sendToTab(tabId, {
     type: "capture-article",
     format,
   });
+
+  if (!result) {
+    throw new Error("コンテンツスクリプトからの応答がありません。ページを再読み込みしてお試しください。");
+  }
 
   if (result.error) {
     throw new Error(result.error);

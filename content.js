@@ -7,10 +7,6 @@
 (() => {
   "use strict";
 
-  // 二重実行防止
-  if (window.__articleCaptureInjected) return;
-  window.__articleCaptureInjected = true;
-
   /**
    * 記事要素を検出し、html2canvas でキャプチャして dataURL を返す
    */
@@ -41,7 +37,6 @@
         scale: window.devicePixelRatio || 1,
         logging: false,
         backgroundColor: "#ffffff",
-        // スクロール位置を自動で処理してくれる
         scrollX: 0,
         scrollY: -window.scrollY,
         windowWidth: document.documentElement.scrollWidth,
@@ -50,24 +45,13 @@
 
       const imageDataUrl = canvas.toDataURL("image/png");
 
-      if (format === "pdf") {
-        // PDF生成はoffscreenに委任するため、画像データを返す
-        return {
-          success: true,
-          dataUrl: imageDataUrl,
-          width: canvas.width,
-          height: canvas.height,
-          needsPdf: true,
-        };
-      } else {
-        return {
-          success: true,
-          dataUrl: imageDataUrl,
-          width: canvas.width,
-          height: canvas.height,
-          needsPdf: false,
-        };
-      }
+      return {
+        success: true,
+        dataUrl: imageDataUrl,
+        width: canvas.width,
+        height: canvas.height,
+        needsPdf: format === "pdf",
+      };
     } catch (err) {
       return { error: "キャプチャに失敗: " + err.message };
     } finally {
@@ -78,13 +62,20 @@
     }
   }
 
-  // background.js からのメッセージを処理
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // 前回のリスナーを削除して再登録できるようにする
+  if (window.__articleCaptureListener) {
+    chrome.runtime.onMessage.removeListener(window.__articleCaptureListener);
+  }
+
+  // メッセージリスナーを登録
+  window.__articleCaptureListener = (message, sender, sendResponse) => {
     if (message.type === "capture-article") {
       captureArticle(message.format)
         .then((result) => sendResponse(result))
         .catch((err) => sendResponse({ error: err.message }));
       return true; // async response
     }
-  });
+  };
+
+  chrome.runtime.onMessage.addListener(window.__articleCaptureListener);
 })();
