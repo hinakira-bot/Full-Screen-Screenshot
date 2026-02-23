@@ -61,10 +61,17 @@ function notifyProgress(text, percent) {
 }
 
 /**
+ * 指定ミリ秒だけ待機
+ */
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
  * 現在表示されている画面をキャプチャ（リトライ付き）
  * Chrome の captureVisibleTab は 1秒あたり2回までの制限がある
  */
-async function captureScreen(tabId, retries = 3) {
+async function captureScreen(retries = 5) {
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
       const dataUrl = await new Promise((resolve, reject) => {
@@ -82,9 +89,17 @@ async function captureScreen(tabId, retries = 3) {
       });
       return dataUrl;
     } catch (err) {
-      if (attempt < retries - 1 && err.message.includes("MAX_CAPTURE")) {
-        // レート制限に引っかかった場合、待ってからリトライ
-        await new Promise((r) => setTimeout(r, 1000));
+      const msg = err.message || "";
+      const isRateLimit =
+        msg.includes("MAX_CAPTURE") ||
+        msg.includes("quota") ||
+        msg.includes("Too many");
+      if (attempt < retries - 1 && isRateLimit) {
+        // レート制限 → 長めに待ってリトライ
+        console.log(
+          `captureVisibleTab rate limited, retry ${attempt + 1}/${retries} ...`
+        );
+        await sleep(1500);
       } else {
         throw err;
       }
@@ -126,9 +141,8 @@ async function captureArticle(tabId, format) {
 
   // 4. スクロールしながらキャプチャ
   const screenshots = [];
-  const captureRegions = []; // 各スクリーンショットから切り出す領域情報
+  const captureRegions = [];
 
-  // 記事の開始位置から終了位置まで、ビューポート単位でスクロール
   const articleBottom = articleTop + articleHeight;
   let currentY = articleTop;
   const totalScrollSteps = Math.ceil(articleHeight / viewportHeight);
@@ -147,33 +161,31 @@ async function captureArticle(tabId, format) {
     // スクロール
     await sendToTab(tabId, { type: "scroll-to", y: currentY });
 
-    // captureVisibleTab のレート制限（1秒2回）を回避するため十分に待つ
-    await new Promise((r) => setTimeout(r, 600));
+    // ★ レート制限を確実に回避するため 1.2秒待つ
+    await sleep(1200);
 
-    // キャプチャ
-    const dataUrl = await captureScreen(tabId);
+    // キャプチャ（リトライ付き）
+    const dataUrl = await captureScreen();
     screenshots.push(dataUrl);
 
     // この撮影でキャプチャすべき領域を計算
     const scrollInfo = await sendToTab(tabId, { type: "get-scroll-info" });
     const actualScrollY = scrollInfo.scrollY;
 
-    // ビューポート内での記事領域の開始Y
     const cropTop = Math.max(0, articleTop - actualScrollY);
-    // ビューポート内での記事領域の終了Y
     const cropBottom = Math.min(
       viewportHeight,
       articleBottom - actualScrollY
     );
 
     captureRegions.push({
-      // ビューポート座標（ピクセル単位はdevicePixelRatioを掛ける）
       sx: Math.floor(articleLeft * devicePixelRatio),
       sy: Math.floor(cropTop * devicePixelRatio),
       sw: Math.ceil(articleWidth * devicePixelRatio),
       sh: Math.ceil((cropBottom - cropTop) * devicePixelRatio),
-      // 結合先での位置
-      dy: Math.floor((actualScrollY + cropTop - articleTop) * devicePixelRatio),
+      dy: Math.floor(
+        (actualScrollY + cropTop - articleTop) * devicePixelRatio
+      ),
     });
 
     currentY += viewportHeight;
@@ -233,7 +245,6 @@ async function captureArticle(tabId, format) {
 
 // popup.js からのメッセージを処理
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // offscreen や content script からのメッセージは無視
   // popup からのメッセージのみ処理（popup は sender.tab を持たない）
   if (message.type === "start-capture" && !sender.tab) {
     captureArticle(message.tabId, message.format)
