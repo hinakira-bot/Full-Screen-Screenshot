@@ -1,11 +1,68 @@
 /**
- * Content Script - 記事検出とキャプチャ
+ * Content Script - 記事検出・キャプチャ・PDF生成
  *
- * html2canvas を使って記事要素を直接キャンバスにレンダリング。
- * captureVisibleTab のレート制限を完全に回避。
+ * html2canvas で記事要素を直接キャンバスにレンダリングし、
+ * PNG または PDF（jsPDF）として dataURL を生成する。
+ * すべてコンテンツスクリプト内で完結（メッセージサイズ制限を回避）。
  */
 (() => {
   "use strict";
+
+  /**
+   * Canvas から PDF の dataURL を生成
+   */
+  function canvasToPdfDataUrl(canvas) {
+    const { jspdf } = window.jspdf;
+
+    const dpr = window.devicePixelRatio || 1;
+    const displayWidth = canvas.width / dpr;
+    const displayHeight = canvas.height / dpr;
+
+    // A4サイズ
+    const a4Width = 210; // mm
+    const a4Height = 297; // mm
+    const margin = 10; // mm
+    const contentWidth = a4Width - margin * 2;
+
+    // アスペクト比を維持してスケーリング
+    const scaledHeight = (displayHeight / displayWidth) * contentWidth;
+
+    // ページあたりの有効高さ
+    const pageContentHeight = a4Height - margin * 2;
+
+    // 必要なページ数
+    const totalPages = Math.ceil(scaledHeight / pageContentHeight);
+
+    const pdf = new jspdf({
+      orientation: "portrait",
+      unit: "mm",
+      format: "a4",
+    });
+
+    const imgDataUrl = canvas.toDataURL("image/png");
+
+    for (let page = 0; page < totalPages; page++) {
+      if (page > 0) {
+        pdf.addPage();
+      }
+
+      const yOffset = -(page * pageContentHeight) + margin;
+
+      pdf.saveGraphicsState();
+      pdf.rect(margin, margin, contentWidth, pageContentHeight, "clip");
+      pdf.addImage(
+        imgDataUrl,
+        "PNG",
+        margin,
+        yOffset,
+        contentWidth,
+        scaledHeight
+      );
+      pdf.restoreGraphicsState();
+    }
+
+    return pdf.output("datauristring");
+  }
 
   /**
    * 記事要素を検出し、html2canvas でキャプチャして dataURL を返す
@@ -43,14 +100,21 @@
         windowHeight: document.documentElement.scrollHeight,
       });
 
-      const imageDataUrl = canvas.toDataURL("image/png");
+      let dataUrl;
+
+      if (format === "pdf") {
+        // jsPDF が読み込まれているか確認
+        if (!window.jspdf) {
+          return { error: "jsPDF が読み込まれていません" };
+        }
+        dataUrl = canvasToPdfDataUrl(canvas);
+      } else {
+        dataUrl = canvas.toDataURL("image/png");
+      }
 
       return {
         success: true,
-        dataUrl: imageDataUrl,
-        width: canvas.width,
-        height: canvas.height,
-        needsPdf: format === "pdf",
+        dataUrl,
       };
     } catch (err) {
       return { error: "キャプチャに失敗: " + err.message };
