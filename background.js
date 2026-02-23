@@ -255,9 +255,14 @@ async function combineAndExport(captures, finalWidth, finalHeight, format, dpr) 
         pdf.addImage(pageImg, "JPEG", margin, margin, contentW, imgH);
       }
 
-      dataUrl = pdf.output("datauristring");
+      const pdfBlob = pdf.output("blob");
+      dataUrl = URL.createObjectURL(pdfBlob);
     } else {
-      dataUrl = canvas.toDataURL("image/png");
+      // Canvas → Blob → Blob URL
+      const blob = await new Promise((resolve) =>
+        canvas.toBlob(resolve, "image/png")
+      );
+      dataUrl = URL.createObjectURL(blob);
     }
 
     return { dataUrl };
