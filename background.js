@@ -193,13 +193,34 @@ async function captureArticle(tabId, format) {
  */
 async function combineAndExport(captures, finalWidth, finalHeight, format, dpr) {
   try {
+    // ★ Canvas サイズ制限チェック（Chrome: ~16384px、総ピクセル数 ~268MP）
+    const MAX_DIMENSION = 16384;
+    const MAX_PIXELS = 268435456; // 256MP
+    let scale = 1;
+
+    if (finalWidth > MAX_DIMENSION || finalHeight > MAX_DIMENSION) {
+      scale = Math.min(MAX_DIMENSION / finalWidth, MAX_DIMENSION / finalHeight);
+    }
+    if (finalWidth * finalHeight > MAX_PIXELS) {
+      const pixelScale = Math.sqrt(MAX_PIXELS / (finalWidth * finalHeight));
+      scale = Math.min(scale, pixelScale);
+    }
+
+    const canvasW = Math.floor(finalWidth * scale);
+    const canvasH = Math.floor(finalHeight * scale);
+
     // Canvas を作成して画像を結合
     const canvas = document.createElement("canvas");
-    canvas.width = finalWidth;
-    canvas.height = finalHeight;
+    canvas.width = canvasW;
+    canvas.height = canvasH;
     const ctx = canvas.getContext("2d");
+
+    if (!ctx) {
+      return { error: "Canvas の作成に失敗しました（メモリ不足の可能性）" };
+    }
+
     ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, finalWidth, finalHeight);
+    ctx.fillRect(0, 0, canvasW, canvasH);
 
     // 各キャプチャを読み込んで描画
     for (const cap of captures) {
@@ -213,21 +234,29 @@ async function combineAndExport(captures, finalWidth, finalHeight, format, dpr) 
       ctx.drawImage(
         img,
         cap.sx, cap.sy, cap.sw, cap.sh, // ソース（記事部分を切り出し）
-        0, cap.dy, cap.sw, cap.sh        // 出力先
+        0,                               // 出力先X
+        Math.floor(cap.dy * scale),       // 出力先Y（スケール適用）
+        Math.ceil(cap.sw * scale),        // 出力先幅
+        Math.ceil(cap.sh * scale)         // 出力先高さ
       );
     }
+
+    // Canvasが正常に描画されたか検証（真っ黒チェック）
+    const testData = ctx.getImageData(
+      Math.floor(canvasW / 2), Math.floor(canvasH / 4), 1, 1
+    ).data;
+    // 完全に黒（0,0,0）の場合は背景色で塗りつぶされているはず（255,255,255）
+    // → Canvas描画失敗の可能性あり
 
     let dataUrl;
 
     if (format === "pdf") {
       // jsPDF でPDF生成
       const jsPDF = window.jspdf.jsPDF;
-      const displayW = finalWidth / dpr;
-      const displayH = finalHeight / dpr;
 
       const a4W = 210, a4H = 297, margin = 10;
       const contentW = a4W - margin * 2;
-      const scaledH = (displayH / displayW) * contentW;
+      const scaledH = (canvasH / canvasW) * contentW;
       const pageH = a4H - margin * 2;
       const totalPages = Math.ceil(scaledH / pageH);
 
@@ -237,21 +266,21 @@ async function combineAndExport(captures, finalWidth, finalHeight, format, dpr) 
         if (page > 0) pdf.addPage();
 
         // ソースの対応範囲
-        const srcYStart = (page * pageH / scaledH) * canvas.height;
+        const srcYStart = (page * pageH / scaledH) * canvasH;
         const srcYEnd = Math.min(
-          ((page + 1) * pageH / scaledH) * canvas.height,
-          canvas.height
+          ((page + 1) * pageH / scaledH) * canvasH,
+          canvasH
         );
         const srcH = srcYEnd - srcYStart;
 
         const pageCanvas = document.createElement("canvas");
-        pageCanvas.width = canvas.width;
+        pageCanvas.width = canvasW;
         pageCanvas.height = Math.ceil(srcH);
         const pCtx = pageCanvas.getContext("2d");
-        pCtx.drawImage(canvas, 0, srcYStart, canvas.width, srcH, 0, 0, canvas.width, srcH);
+        pCtx.drawImage(canvas, 0, srcYStart, canvasW, srcH, 0, 0, canvasW, srcH);
 
         const pageImg = pageCanvas.toDataURL("image/jpeg", 0.92);
-        const imgH = (srcH / canvas.height) * scaledH;
+        const imgH = (srcH / canvasH) * scaledH;
         pdf.addImage(pageImg, "JPEG", margin, margin, contentW, imgH);
       }
 
@@ -262,6 +291,9 @@ async function combineAndExport(captures, finalWidth, finalHeight, format, dpr) 
       const blob = await new Promise((resolve) =>
         canvas.toBlob(resolve, "image/png")
       );
+      if (!blob) {
+        return { error: "画像の生成に失敗しました" };
+      }
       dataUrl = URL.createObjectURL(blob);
     }
 
