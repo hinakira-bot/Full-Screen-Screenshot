@@ -193,26 +193,26 @@ async function captureArticle(tabId, format) {
  */
 async function combineAndExport(captures, finalWidth, finalHeight, format, dpr) {
   try {
-    // ★ Canvas サイズ制限チェック（Chrome: ~16384px、総ピクセル数 ~268MP）
-    const MAX_DIMENSION = 16384;
-    const MAX_PIXELS = 268435456; // 256MP
-    let scale = 1;
+    // ★ DPRを考慮せず、CSS座標ベースでCanvasを作成
+    //    captureVisibleTab はDPR倍のサイズで撮影されるので、
+    //    ソースからの切り出しはDPR座標、結合先はCSS座標で描画する
+    const cssWidth = Math.ceil(finalWidth / dpr);
+    const cssHeight = Math.ceil(finalHeight / dpr);
 
-    if (finalWidth > MAX_DIMENSION || finalHeight > MAX_DIMENSION) {
-      scale = Math.min(MAX_DIMENSION / finalWidth, MAX_DIMENSION / finalHeight);
+    // Canvas サイズ制限チェック（Chrome: ~16384px）
+    const MAX_DIM = 16384;
+    let outW = finalWidth;
+    let outH = finalHeight;
+
+    if (outW > MAX_DIM || outH > MAX_DIM || outW * outH > 268435456) {
+      // 大きすぎる場合はCSS解像度にフォールバック
+      outW = cssWidth;
+      outH = cssHeight;
     }
-    if (finalWidth * finalHeight > MAX_PIXELS) {
-      const pixelScale = Math.sqrt(MAX_PIXELS / (finalWidth * finalHeight));
-      scale = Math.min(scale, pixelScale);
-    }
 
-    const canvasW = Math.floor(finalWidth * scale);
-    const canvasH = Math.floor(finalHeight * scale);
-
-    // Canvas を作成して画像を結合
     const canvas = document.createElement("canvas");
-    canvas.width = canvasW;
-    canvas.height = canvasH;
+    canvas.width = outW;
+    canvas.height = outH;
     const ctx = canvas.getContext("2d");
 
     if (!ctx) {
@@ -220,7 +220,10 @@ async function combineAndExport(captures, finalWidth, finalHeight, format, dpr) 
     }
 
     ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, canvasW, canvasH);
+    ctx.fillRect(0, 0, outW, outH);
+
+    // 出力Canvasと元のDPRサイズとの比率
+    const outScale = outW / finalWidth;
 
     // 各キャプチャを読み込んで描画
     for (const cap of captures) {
@@ -231,32 +234,25 @@ async function combineAndExport(captures, finalWidth, finalHeight, format, dpr) 
         i.src = cap.dataUrl;
       });
 
+      // ソース座標（DPRピクセル） → 出力座標
       ctx.drawImage(
         img,
-        cap.sx, cap.sy, cap.sw, cap.sh, // ソース（記事部分を切り出し）
-        0,                               // 出力先X
-        Math.floor(cap.dy * scale),       // 出力先Y（スケール適用）
-        Math.ceil(cap.sw * scale),        // 出力先幅
-        Math.ceil(cap.sh * scale)         // 出力先高さ
+        cap.sx, cap.sy, cap.sw, cap.sh, // ソース切り出し
+        0,
+        Math.round(cap.dy * outScale),
+        Math.ceil(cap.sw * outScale),
+        Math.ceil(cap.sh * outScale)
       );
     }
-
-    // Canvasが正常に描画されたか検証（真っ黒チェック）
-    const testData = ctx.getImageData(
-      Math.floor(canvasW / 2), Math.floor(canvasH / 4), 1, 1
-    ).data;
-    // 完全に黒（0,0,0）の場合は背景色で塗りつぶされているはず（255,255,255）
-    // → Canvas描画失敗の可能性あり
 
     let dataUrl;
 
     if (format === "pdf") {
-      // jsPDF でPDF生成
       const jsPDF = window.jspdf.jsPDF;
 
       const a4W = 210, a4H = 297, margin = 10;
       const contentW = a4W - margin * 2;
-      const scaledH = (canvasH / canvasW) * contentW;
+      const scaledH = (outH / outW) * contentW;
       const pageH = a4H - margin * 2;
       const totalPages = Math.ceil(scaledH / pageH);
 
@@ -265,29 +261,27 @@ async function combineAndExport(captures, finalWidth, finalHeight, format, dpr) 
       for (let page = 0; page < totalPages; page++) {
         if (page > 0) pdf.addPage();
 
-        // ソースの対応範囲
-        const srcYStart = (page * pageH / scaledH) * canvasH;
+        const srcYStart = Math.floor((page * pageH / scaledH) * outH);
         const srcYEnd = Math.min(
-          ((page + 1) * pageH / scaledH) * canvasH,
-          canvasH
+          Math.floor(((page + 1) * pageH / scaledH) * outH),
+          outH
         );
         const srcH = srcYEnd - srcYStart;
 
         const pageCanvas = document.createElement("canvas");
-        pageCanvas.width = canvasW;
-        pageCanvas.height = Math.ceil(srcH);
+        pageCanvas.width = outW;
+        pageCanvas.height = srcH;
         const pCtx = pageCanvas.getContext("2d");
-        pCtx.drawImage(canvas, 0, srcYStart, canvasW, srcH, 0, 0, canvasW, srcH);
+        pCtx.drawImage(canvas, 0, srcYStart, outW, srcH, 0, 0, outW, srcH);
 
         const pageImg = pageCanvas.toDataURL("image/jpeg", 0.92);
-        const imgH = (srcH / canvasH) * scaledH;
+        const imgH = (srcH / outH) * scaledH;
         pdf.addImage(pageImg, "JPEG", margin, margin, contentW, imgH);
       }
 
       const pdfBlob = pdf.output("blob");
       dataUrl = URL.createObjectURL(pdfBlob);
     } else {
-      // Canvas → Blob → Blob URL
       const blob = await new Promise((resolve) =>
         canvas.toBlob(resolve, "image/png")
       );
