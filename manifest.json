@@ -1,12 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Article Screenshot",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "記事部分のみを自動検出してスクリーンショットを撮影し、PNG/PDF形式で保存できるChrome拡張機能",
   "permissions": [
     "activeTab",
     "scripting",
     "downloads"
+  ],
+  "host_permissions": [
+    "<all_urls>"
   ],
   "action": {
     "default_popup": "popup.html",
